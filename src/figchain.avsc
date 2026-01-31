@@ -1,0 +1,261 @@
+[
+    {
+        "type": "enum",
+        "name": "Operator",
+        "namespace": "io.figchain.avro.model",
+        "symbols": ["EQUALS", "NOT_EQUALS", "GREATER_THAN", "LESS_THAN", "CONTAINS", "IN", "NOT_IN", "SPLIT"]
+    },
+    {
+        "type": "record",
+        "name": "Condition",
+        "namespace": "io.figchain.avro.model",
+        "fields": [
+            {"name": "variable", "type": "string"},
+            {"name": "operator", "type": "io.figchain.avro.model.Operator"},
+            {"name": "values", "type": {"type": "array", "items": "string"}}
+        ]
+    },
+    {
+        "type": "record",
+        "name": "Rule",
+        "namespace": "io.figchain.avro.model",
+        "fields": [
+            {"name": "description", "type": ["null", "string"], "default": null},
+            {"name": "conditions", "type": {"type": "array", "items": "io.figchain.avro.model.Condition"}},
+            {"name": "targetVersion", "type": {"type": "string", "logicalType": "uuid"}}
+        ]
+    },
+    {
+        "type": "record",
+        "name": "FigDefinition",
+        "namespace": "io.figchain.avro.model",
+        "fields": [
+            {
+                "name": "namespace",
+                "type": "string"
+            },
+            {
+                "name": "key",
+                "type": "string"
+            },
+            {
+                "name": "figId",
+                "type": {
+                    "type": "string",
+                    "logicalType": "uuid"
+                }
+            },
+            {
+                "name": "schemaUri",
+                "type": {
+                    "type": "string",
+                    "logicalType": "uri"
+                }
+            },
+            {
+                "name": "schemaVersion",
+                "type": "string"
+            },
+            {
+                "name": "createdAt",
+                "type": {
+                    "type": "long",
+                    "logicalType": "timestamp-millis"
+                }
+            },
+            {
+                "name": "updatedAt",
+                "type": {
+                    "type": "long",
+                    "logicalType": "timestamp-millis"
+                }
+            }
+        ]
+    },
+    {
+        "type": "record",
+        "name": "Fig",
+        "namespace": "io.figchain.avro.model",
+        "fields": [
+            {
+                "name": "figId",
+                "type": {
+                    "type": "string",
+                    "logicalType": "uuid"
+                }
+            },
+            {
+                "name": "version",
+                "type": {
+                    "type": "string",
+                    "logicalType": "uuid"
+                }
+            },
+            {
+                "name": "payload",
+                "type": "bytes"
+            },
+            {
+                "name": "isEncrypted",
+                "type": "boolean",
+                "default": false
+            },
+            {
+                "name": "wrappedDek",
+                "type": ["null", "bytes"],
+                "default": null
+            },
+            {
+                "name": "encryptionAlgorithm",
+                "type": ["null", "string"],
+                "default": null
+            },
+            {
+                "name": "keyId",
+                "type": ["null", "string"],
+                "default": null
+            }
+        ]
+    },
+    {
+        "type": "record",
+        "name": "FigFamily",
+        "namespace": "io.figchain.avro.model",
+        "fields": [
+            {
+                "name": "definition",
+                "type": "io.figchain.avro.model.FigDefinition"
+            },
+            {
+                "name": "figs",
+                "type": {
+                    "type": "array",
+                    "items": "io.figchain.avro.model.Fig"
+                }
+            },
+            {
+                "name": "rules",
+                "type": {
+                    "type": "array",
+                    "items": "io.figchain.avro.model.Rule"
+                },
+                "default": []
+            },
+            {
+                "name": "defaultVersion",
+                "type": ["null", {"type": "string", "logicalType": "uuid"}],
+                "default": null
+            }
+        ]
+    },
+    {
+        "type": "record",
+        "name": "InitialFetchRequest",
+        "namespace": "io.figchain.avro.model",
+        "fields": [
+            {
+                "name": "namespace",
+                "type": "string"
+            },
+            {
+                "name": "environmentId",
+                "type": {
+                    "type": "string",
+                    "logicalType": "uuid"
+                }
+            },
+            {
+                "name": "asOfTimestamp",
+                "type": [
+                    "null",
+                    {
+                        "type": "long",
+                        "logicalType": "timestamp-millis"
+                    }
+                ],
+                "default": null
+            }
+        ]
+    },
+    {
+        "type": "record",
+        "name": "InitialFetchResponse",
+        "namespace": "io.figchain.avro.model",
+        "fields": [
+            {
+                "name": "figFamilies",
+                "type": {
+                    "type": "array",
+                    "items": "io.figchain.avro.model.FigFamily"
+                }
+            },
+            {
+                "name": "cursor",
+                "type": "string"
+            },
+            {
+                "name": "environmentId",
+                "type": {
+                    "type": "string",
+                    "logicalType": "uuid"
+                }
+            },
+            {
+                "name": "schemas",
+                "type": {
+                    "type": "map",
+                    "values": "string"
+                },
+                "default": {}
+            }
+        ]
+    },
+    {
+        "type": "record",
+        "name": "UpdateFetchRequest",
+        "namespace": "io.figchain.avro.model",
+        "fields": [
+            {
+                "name": "namespace",
+                "type": "string"
+            },
+            {
+                "name": "cursor",
+                "type": "string"
+            },
+            {
+                "name": "environmentId",
+                "type": {
+                    "type": "string",
+                    "logicalType": "uuid"
+                }
+            }
+        ]
+    },
+    {
+        "type": "record",
+        "name": "UpdateFetchResponse",
+        "namespace": "io.figchain.avro.model",
+        "fields": [
+            {
+                "name": "figFamilies",
+                "type": {
+                    "type": "array",
+                    "items": "io.figchain.avro.model.FigFamily"
+                }
+            },
+            {
+                "name": "cursor",
+                "type": "string"
+            },
+            {
+                "name": "schemas",
+                "type": {
+                    "type": "map",
+                    "values": "string"
+                },
+                "default": {}
+            }
+        ]
+    }
+]
