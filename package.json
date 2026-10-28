@@ -1,6 +1,6 @@
 {
   "name": "@figchain/client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Official JavaScript/TypeScript client for FigChain configuration management",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
