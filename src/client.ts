@@ -1,15 +1,20 @@
 
 import { Config, ConfigOptions, BootstrapStrategy as BootstrapStrategyEnum } from './config';
-import { Transport } from './transport';
+import { Transport, isTransitFailure } from './transport';
 import { Store } from './store';
 import { Evaluator, Context } from './evaluation';
 import { EncryptionService } from './encryption/service';
 import { PrivateKeyTokenProvider, SharedSecretTokenProvider, TokenProvider } from './auth';
 import { BootstrapStrategy, ServerStrategy, S3BackupStrategyImpl, FallbackStrategy, HybridStrategy } from './bootstrap/strategies';
 import { S3BackupService } from './bootstrap/s3';
-import { FigFamily } from './models';
+import { FigFamily, UpdateFetchResponse } from './models';
 import * as avsc from 'avsc';
 import { loadX25519PrivateKey } from './crypto';
+
+/** How long the server may hold an update request open; under common proxy idle timeouts (often 60s). */
+const LONG_POLL_WAIT_SECONDS = 30;
+/** Consecutive in-transit failures in long-poll mode before a namespace falls back to polling. */
+const LONG_POLL_FALLBACK_AFTER = 3;
 
 export class FigChainClient {
   private config: Config;
@@ -20,7 +25,7 @@ export class FigChainClient {
   private encryptionService?: EncryptionService;
   private schemas: Map<string, avsc.Type> = new Map();
   private namespaceCursors: Map<string, string> = new Map();
-  private pollerTimeout?: NodeJS.Timeout;
+  private pollerTimeouts = new Set<NodeJS.Timeout>();
   private isShutdown: boolean = false;
   private listeners: Map<string, ((val: unknown) => void)[]> = new Map();
 
@@ -134,58 +139,68 @@ export class FigChainClient {
     this.poll();
   }
 
+  /** Starts one poller per namespace so a quiet namespace's long poll never delays another's updates. */
   private poll() {
-    if (this.isShutdown) {return;}
+    for (const ns of this.config.namespaces) {
+      this.pollNamespace(ns);
+    }
+  }
 
-    const useLongPolling = this.config.useLongPolling && !!this.longPollingTransport;
-    const pollTransport = useLongPolling ? this.longPollingTransport! : this.transport;
+  /**
+   * Single update loop for both transports. Long polling and plain polling
+   * differ only in how long the server may hold the request (LONG_POLL_WAIT_SECONDS
+   * vs 0) and how long we pause before the next request (0 vs pollInterval).
+   */
+  private pollNamespace(ns: string) {
+    const pollTransport = this.longPollingTransport ?? this.transport;
+    let longPoll = this.config.useLongPolling;
+    let transitFailures = 0;
 
-    // Use recursive timeout loop
-    const pollFn = () => {
-        if (this.isShutdown) {return;}
-
-        void (async () => {
-            const namespaces = Array.from(this.config.namespaces);
-            for (const ns of namespaces) {
-                if (this.isShutdown) {break;}
-                const cursor = this.namespaceCursors.get(ns) || "";
-
-                try {
-                    const resp = await pollTransport.fetchUpdates(ns, cursor);
-
-                if (resp.cursor) {
-                    this.namespaceCursors.set(ns, resp.cursor);
-                }
-
-                if (resp.schemas) {
-                    for (const [uri, schemaStr] of Object.entries(resp.schemas)) {
-                        this.registerSchema(uri, schemaStr);
-                    }
-                }
-
-                if (resp.figFamilies && resp.figFamilies.length > 0) {
-                    this.store.putAll(resp.figFamilies);
-                    void this.notifyListeners(resp.figFamilies);
-                }
-                } catch (e) {
-                    console.warn(`Poll failed for ${ns}:`, e);
-                }
-            }
-
-            if (!this.isShutdown) {
-                if (useLongPolling) {
-                    // Long polling holds connection, so poll immediately on return
-                    this.pollerTimeout = setTimeout(pollFn, 100);
-                } else {
-                    // Regular polling uses configured interval
-                    this.pollerTimeout = setTimeout(pollFn, this.config.pollInterval * 1000);
-                }
-            }
-        })();
+    const next = (delayMs: number) => {
+      if (this.isShutdown) {return;}
+      const timer = setTimeout(() => { this.pollerTimeouts.delete(timer); void once(); }, delayMs);
+      this.pollerTimeouts.add(timer);
     };
 
-    // Start
-    pollFn();
+    const once = async () => {
+      if (this.isShutdown) {return;}
+      let pauseMs = this.config.pollInterval * 1000;
+      try {
+        const resp = await pollTransport.fetchUpdates(
+          ns,
+          this.namespaceCursors.get(ns) || "",
+          longPoll ? LONG_POLL_WAIT_SECONDS : 0
+        );
+        transitFailures = 0;
+        this.applyUpdate(ns, resp);
+        if (longPoll) {pauseMs = 0;} // the server already waited; reconnect now
+      } catch (e) {
+        console.warn(`Poll failed for ${ns}:`, e);
+        if (longPoll && isTransitFailure(e) && ++transitFailures >= LONG_POLL_FALLBACK_AFTER) {
+          console.warn(`Long polling for ${ns} failed ${transitFailures} times in transit; ` +
+            `falling back to polling every ${this.config.pollInterval}s`);
+          longPoll = false;
+        }
+      }
+      next(pauseMs);
+    };
+
+    void once();
+  }
+
+  private applyUpdate(ns: string, resp: UpdateFetchResponse) {
+    if (resp.cursor) {
+      this.namespaceCursors.set(ns, resp.cursor);
+    }
+    if (resp.schemas) {
+      for (const [uri, schemaStr] of Object.entries(resp.schemas)) {
+        this.registerSchema(uri, schemaStr);
+      }
+    }
+    if (resp.figFamilies && resp.figFamilies.length > 0) {
+      this.store.putAll(resp.figFamilies);
+      void this.notifyListeners(resp.figFamilies);
+    }
   }
 
   private registerSchema(uri: string, schemaStr: string) {
@@ -298,6 +313,7 @@ export class FigChainClient {
 
   close() {
       this.isShutdown = true;
-      if (this.pollerTimeout) {clearTimeout(this.pollerTimeout);}
+      for (const timer of this.pollerTimeouts) {clearTimeout(timer);}
+      this.pollerTimeouts.clear();
   }
 }

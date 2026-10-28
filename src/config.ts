@@ -118,7 +118,9 @@ export class Config implements ConfigOptions {
     for (const [envKey, configKey] of Object.entries(envMap)) {
       const val = process.env[envKey];
       if (val !== undefined) {
-        if (configKey === "pollInterval" || configKey === "maxRetries" || configKey === "retryDelayMs") {
+        if (envKey === "FIGCHAIN_POLLING_INTERVAL_MS") {
+          configData[configKey] = parseInt(val, 10) / 1000;
+        } else if (configKey === "maxRetries" || configKey === "retryDelayMs") {
           configData[configKey] = parseInt(val, 10);
         } else if (configKey === "s3BackupEnabled" || configKey === "s3BackupPathStyleAccess" || configKey === "useLongPolling") {
           configData[configKey] = val.toLowerCase() === "true" || val === "1";

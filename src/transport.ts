@@ -323,6 +323,18 @@ async function decodeOcf(buffer: Buffer): Promise<unknown> {
     });
 }
 
+/** Tells the server how long it may hold an update request open; absent or 0 means respond now. */
+export const LONG_POLL_TIMEOUT_HEADER = 'X-Long-Poll-Timeout';
+const REQUEST_SLACK_SECONDS = 5;
+
+/**
+ * True when a request failed in transit (timeout, reset, dropped connection)
+ * rather than the server answering with an error status.
+ */
+export function isTransitFailure(e: unknown): boolean {
+  return axios.isAxiosError(e) && !e.response;
+}
+
 export class Transport {
   private client: AxiosInstance;
 
@@ -366,40 +378,34 @@ export class Transport {
       }
   }
 
-  async fetchUpdates(namespace: string, cursor: string): Promise<UpdateFetchResponse> {
-    const headers = await this.getHeaders();
-    if (!cursor) {
-        const req = {
-            namespace,
-            cursor: cursor || "",
-            environmentId: this.environmentId
-        };
-        const buf = await encodeOcf(updateFetchRequestType, req);
+  /**
+   * Fetch updates after `cursor`. With `waitSeconds > 0` the server may hold
+   * the request open that long until updates arrive (long polling); 0 returns
+   * immediately. The client timeout allows the wait plus slack, so a
+   * connection silently dropped mid-wait still fails promptly.
+   */
+  async fetchUpdates(namespace: string, cursor: string, waitSeconds = 0): Promise<UpdateFetchResponse> {
+    const headers: Record<string, string> = { ...(await this.getHeaders()) };
+    if (waitSeconds > 0) {
+      headers[LONG_POLL_TIMEOUT_HEADER] = String(Math.floor(waitSeconds));
+    }
+    const req = {
+      namespace,
+      cursor: cursor || "",
+      environmentId: this.environmentId
+    };
+    const buf = await encodeOcf(updateFetchRequestType, req);
 
-        try {
-            const res = await this.client.post('/data/updates', buf, { headers, timeout: 65000 });
-            const data = res.data;
-            const val = await decodeOcf(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
-            return this.mapResponse(val) as UpdateFetchResponse;
-        } catch (e: unknown) {
-            throw this.handleError(e);
-        }
-    } else {
-        const req = {
-            namespace,
-            cursor,
-            environmentId: this.environmentId
-        };
-        const buf = await encodeOcf(updateFetchRequestType, req);
-
-        try {
-            const res = await this.client.post('/data/updates', buf, { headers, timeout: 65000 });
-            const data = res.data;
-            const val = await decodeOcf(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
-            return this.mapResponse(val) as UpdateFetchResponse;
-        } catch (e: unknown) {
-             throw this.handleError(e);
-        }
+    try {
+      const res = await this.client.post('/data/updates', buf, {
+        headers,
+        timeout: (waitSeconds + REQUEST_SLACK_SECONDS) * 1000
+      });
+      const data = res.data;
+      const val = await decodeOcf(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
+      return this.mapResponse(val) as UpdateFetchResponse;
+    } catch (e: unknown) {
+      throw this.handleError(e);
     }
   }
 
