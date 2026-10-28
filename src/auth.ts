@@ -1,5 +1,4 @@
 
-import { v4 as uuidv4 } from 'uuid';
 import { loadEd25519PrivateKey, signEd25519 } from './crypto';
 import * as crypto from 'crypto';
 
@@ -52,7 +51,7 @@ export class PrivateKeyTokenProvider implements TokenProvider {
       iat: now,
       nbf: now,
       exp: now + 3600,
-      jti: uuidv4()
+      jti: crypto.randomUUID()
     };
 
     if (this.tenantId) {payload.tenant_id = this.tenantId;}

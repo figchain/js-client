@@ -8,7 +8,9 @@ export default tseslint.config(
   {
     languageOptions: {
       parserOptions: {
-        project: './tsconfig.json',
+        // Test files are excluded from tsconfig.json (not built), so let the
+        // project service type-check them with default options.
+        projectService: { allowDefaultProject: ['src/*.test.ts'] },
         tsconfigRootDir: import.meta.dirname,
       },
     },
