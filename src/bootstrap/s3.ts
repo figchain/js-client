@@ -6,6 +6,63 @@ import * as crypto from 'crypto';
 import { loadX25519PrivateKey, calculateFingerprint, decryptAesGcm, decryptX25519 } from '../crypto';
 import { NamespaceKey } from '../transport';
 
+export const SUPPORTED_BACKUP_VERSIONS = ['v2', 'v3'] as const;
+export type BackupVersion = typeof SUPPORTED_BACKUP_VERSIONS[number];
+
+/** Unencrypted public section of a v3 backup (schemas only). */
+export interface BackupPublicData {
+  generatedAt?: string;
+  schemas?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface BackupFile {
+  version?: string;
+  algorithm?: string;
+  keyFingerprint?: string;
+  encryptedKey?: string;
+  encryptedData?: string;
+  publicData?: string;
+}
+
+export interface DecryptedBackup {
+  version: BackupVersion;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  payload: any;
+  publicData?: BackupPublicData;
+}
+
+/**
+ * Decrypts a FigChain S3 backup document (v2 or v3).
+ * For v3, the exact UTF-8 bytes of the publicData string are used as AES-GCM AAD.
+ */
+export function decryptBackup(backup: BackupFile, privateKey: crypto.KeyObject): DecryptedBackup {
+  const version = backup.version;
+  if (!version || !(SUPPORTED_BACKUP_VERSIONS as readonly string[]).includes(version)) {
+    throw new Error(`Unsupported backup version: ${JSON.stringify(version)} (supported: ${SUPPORTED_BACKUP_VERSIONS.join(', ')})`);
+  }
+  const { encryptedKey, encryptedData } = backup;
+  if (!encryptedKey || !encryptedData) {throw new Error("Invalid backup format");}
+
+  let aad: Buffer | undefined;
+  let publicData: BackupPublicData | undefined;
+  if (version === 'v3') {
+    if (typeof backup.publicData !== 'string') {
+      throw new Error("Invalid v3 backup: publicData must be a JSON string");
+    }
+    aad = Buffer.from(backup.publicData, 'utf8');
+  }
+
+  const aesKey = decryptX25519(Buffer.from(encryptedKey, 'base64'), privateKey);
+  const payloadJson = decryptAesGcm(Buffer.from(encryptedData, 'base64'), aesKey, aad).toString('utf8');
+  const payload = JSON.parse(payloadJson);
+
+  if (backup.publicData !== undefined && version === 'v3') {
+    publicData = JSON.parse(backup.publicData) as BackupPublicData;
+  }
+  return { version: version as BackupVersion, payload, publicData };
+}
+
 export class S3BackupService {
   private s3: S3Client;
   private privateKey: crypto.KeyObject;
@@ -53,21 +110,7 @@ export class S3BackupService {
           const bodyStr = await resp.Body?.transformToString();
           if (!bodyStr) {throw new Error("Empty backup body");}
 
-          const backupData = JSON.parse(bodyStr) as { encryptedKey?: string; encryptedData?: string };
-
-          // Decrypt
-          const encryptedKey = backupData.encryptedKey;
-          const encryptedData = backupData.encryptedData;
-
-          if (!encryptedKey || !encryptedData) {throw new Error("Invalid backup format");}
-
-          // Decrypt AES Key
-          const aesKey = decryptX25519(Buffer.from(encryptedKey, 'base64'), this.privateKey);
-
-          // Decrypt Payload
-          const payloadJson = decryptAesGcm(Buffer.from(encryptedData, 'base64'), aesKey).toString('utf8');
-
-          const payload = JSON.parse(payloadJson);
+          const { payload } = decryptBackup(JSON.parse(bodyStr), this.privateKey);
 
           return {
               families: ((payload.items as unknown[]) || []).map((d) => this.mapToFigFamily(d as Record<string, unknown>)),
