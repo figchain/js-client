@@ -1,5 +1,5 @@
 
-import { Transport } from '../transport';
+import { Transport, isAuthFailure } from '../transport';
 import { S3BackupService } from './s3';
 import { FigFamily } from '../models';
 
@@ -120,6 +120,9 @@ export class FallbackStrategy implements BootstrapStrategy {
         try {
             return await this.primary.bootstrap(namespaces);
         } catch (e) {
+            // A rejected credential is a configuration error, not an outage. Serving the
+            // backup would hide it while every later update fails the same way.
+            if (isAuthFailure(e)) {throw e;}
             console.warn("Primary bootstrap failed, trying secondary", e);
             return await this.secondary.bootstrap(namespaces);
         }
