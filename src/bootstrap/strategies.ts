@@ -54,7 +54,7 @@ export class S3BackupStrategyImpl implements BootstrapStrategy {
         }
     }
 
-    return { figFamilies: families, cursors, schemas: {} };
+    return { figFamilies: families, cursors, schemas: res.schemas ?? {} };
   }
 }
 

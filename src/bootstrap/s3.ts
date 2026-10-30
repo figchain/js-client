@@ -96,7 +96,7 @@ export class S3BackupService {
     this.fingerprint = calculateFingerprint(this.privateKey);
   }
 
-  async loadBackup(): Promise<{ families: FigFamily[]; cursor?: string }> {
+  async loadBackup(): Promise<{ families: FigFamily[]; cursor?: string; schemas: Record<string, string> }> {
       const bucket = this.config.s3BackupBucket;
       if (!bucket) {throw new Error("S3 Backup bucket not configured");}
 
@@ -110,11 +110,13 @@ export class S3BackupService {
           const bodyStr = await resp.Body?.transformToString();
           if (!bodyStr) {throw new Error("Empty backup body");}
 
-          const { payload } = decryptBackup(JSON.parse(bodyStr), this.privateKey);
+          const { payload, publicData } = decryptBackup(JSON.parse(bodyStr), this.privateKey);
+          const items = ((payload.items as unknown[]) || []) as Record<string, unknown>[];
 
           return {
-              families: ((payload.items as unknown[]) || []).map((d) => this.mapToFigFamily(d as Record<string, unknown>)),
-              cursor: payload.syncToken
+              families: items.map((d) => this.mapToFigFamily(d)),
+              cursor: payload.syncToken,
+              schemas: extractBackupSchemas(items, publicData)
           };
       } catch (e: unknown) {
           throw new Error(`Failed to load backup from S3: ${e instanceof Error ? e.message : String(e)}`);
@@ -159,7 +161,10 @@ export class S3BackupService {
           updatedAt: def.updatedAt as string
       };
 
-      // figs
+      // figs: the server writes one `latestFig` per item; older/family-shaped backups carry `figs`
+      if (d.latestFig && !d.figs) {
+          return { definition, figs: [mapLatestFig(d.latestFig as Record<string, unknown>)], rules: [] };
+      }
       const figs: Fig[] = ((d.figs as unknown[]) || []).map((f) => {
           const fig = f as Record<string, unknown>;
           return {
@@ -197,4 +202,60 @@ export class S3BackupService {
           defaultVersion: d.defaultVersion as string | undefined
       };
   }
+}
+
+function toBuffer(v: unknown): Buffer | undefined {
+  if (v === null || v === undefined) {return undefined;}
+  if (typeof v === 'string') {return Buffer.from(v, 'base64');}
+  return Buffer.from(v as ArrayBuffer);
+}
+
+/** Maps a backup item's `latestFig` (the server's Fig JSON) to a client Fig. */
+export function mapLatestFig(f: Record<string, unknown>): Fig {
+  const payload = (f.payload ?? {}) as Record<string, unknown>;
+  const data = (payload.data ?? {}) as Record<string, unknown>;
+  let bytes: Buffer;
+  if (typeof data.binaryData === 'string') {
+    bytes = Buffer.from(data.binaryData, 'base64');
+  } else if (typeof data.stringData === 'string') {
+    bytes = Buffer.from(data.stringData, 'utf8');
+  } else {
+    bytes = Buffer.alloc(0);
+  }
+  return {
+    figId: f.figId as string,
+    version: f.version as string,
+    payload: bytes,
+    isEncrypted: (f.encrypted ?? f.isEncrypted) as boolean | undefined,
+    wrappedDek: toBuffer(f.wrappedDek),
+    encryptionAlgorithm: (f.encryptionAlgorithm ?? undefined) as string | undefined,
+    keyId: (f.keyId ?? undefined) as string | undefined
+  };
+}
+
+function schemaText(s: Record<string, unknown> | undefined): string | undefined {
+  if (!s) {return undefined;}
+  if (typeof s.contentText === 'string') {return s.contentText;}
+  if (typeof s.content === 'string') {return Buffer.from(s.content, 'base64').toString('utf8');}
+  return undefined;
+}
+
+/**
+ * Collects schema text by URI from the backup's public section and from each item's
+ * `latestFig.payload.schema`, so a backup can be decoded without reaching the server.
+ */
+export function extractBackupSchemas(items: Record<string, unknown>[], publicData?: BackupPublicData): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [uri, s] of Object.entries(publicData?.schemas ?? {})) {
+    const text = schemaText(s as Record<string, unknown>);
+    if (text) {out[uri] = text;}
+  }
+  for (const item of items) {
+    const latest = item.latestFig as Record<string, unknown> | undefined;
+    const schema = (latest?.payload as Record<string, unknown> | undefined)?.schema as Record<string, unknown> | undefined;
+    const uri = (schema?.uri as string | undefined) ?? ((item.definition as Record<string, unknown> | undefined)?.schemaUri as string | undefined);
+    const text = schemaText(schema);
+    if (uri && text && !out[uri]) {out[uri] = text;}
+  }
+  return out;
 }
