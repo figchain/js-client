@@ -88,7 +88,7 @@ export function decryptX25519(packedBlob: Buffer, privateKey: crypto.KeyObject):
   }
 }
 
-export function decryptAesGcm(encryptedData: Buffer, key: Buffer): Buffer {
+export function decryptAesGcm(encryptedData: Buffer, key: Buffer, aad?: Buffer): Buffer {
   try {
     // Expected format: IV (12 bytes) + Ciphertext + Tag (16 bytes)
     if (encryptedData.length < 28) {
@@ -104,6 +104,9 @@ export function decryptAesGcm(encryptedData: Buffer, key: Buffer): Buffer {
 
     const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAuthTag(tag);
+    if (aad) {
+      decipher.setAAD(aad);
+    }
 
     const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     return decrypted;

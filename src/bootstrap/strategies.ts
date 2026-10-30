@@ -1,5 +1,5 @@
 
-import { Transport } from '../transport';
+import { Transport, isAuthFailure } from '../transport';
 import { S3BackupService } from './s3';
 import { FigFamily } from '../models';
 
@@ -54,14 +54,18 @@ export class S3BackupStrategyImpl implements BootstrapStrategy {
         }
     }
 
-    return { figFamilies: families, cursors, schemas: {} };
+    return { figFamilies: families, cursors, schemas: res.schemas ?? {} };
   }
 }
 
+// Bounds the hybrid catch-up loop.
+const MAX_CATCH_UP_PAGES = 1000;
+
 export class HybridStrategy implements BootstrapStrategy {
   constructor(
-      private s3Strategy: BootstrapStrategy, 
-      private serverStrategy: BootstrapStrategy
+      private s3Strategy: BootstrapStrategy,
+      private serverStrategy: BootstrapStrategy,
+      private transport: Pick<Transport, 'fetchUpdates'>
   ) {}
 
   async bootstrap(namespaces: string[]): Promise<BootstrapResult> {
@@ -74,8 +78,35 @@ export class HybridStrategy implements BootstrapStrategy {
           return this.serverStrategy.bootstrap(namespaces);
       }
 
-      // Return S3 result; client will catch up via polling from S3 cursors
-      return s3Result;
+      // Catch up from the backup's cursors before returning, so init() doesn't resolve with
+      // stale values. The server returns changes a page at a time, so keep fetching until the
+      // cursor stops advancing.
+      const families = [...s3Result.figFamilies];
+      const cursors = { ...s3Result.cursors };
+      const schemas = { ...s3Result.schemas };
+      for (const ns of namespaces) {
+          let cursor = cursors[ns];
+          if (!cursor) {
+              continue;
+          }
+          try {
+              for (let page = 0; page < MAX_CATCH_UP_PAGES; page++) {
+                  const resp = await this.transport.fetchUpdates(ns, cursor);
+                  families.push(...resp.figFamilies);
+                  Object.assign(schemas, resp.schemas ?? {});
+                  if (resp.cursor) {
+                      cursors[ns] = resp.cursor;
+                  }
+                  if (!resp.cursor || resp.cursor === cursor || resp.figFamilies.length === 0) {
+                      break;
+                  }
+                  cursor = resp.cursor;
+              }
+          } catch (e) {
+              console.warn(`Hybrid bootstrap: catch-up failed for ${ns}, polling will retry`, e);
+          }
+      }
+      return { figFamilies: families, cursors, schemas };
   }
 }
 
@@ -89,6 +120,9 @@ export class FallbackStrategy implements BootstrapStrategy {
         try {
             return await this.primary.bootstrap(namespaces);
         } catch (e) {
+            // A rejected credential is a configuration error, not an outage. Serving the
+            // backup would hide it while every later update fails the same way.
+            if (isAuthFailure(e)) {throw e;}
             console.warn("Primary bootstrap failed, trying secondary", e);
             return await this.secondary.bootstrap(namespaces);
         }

@@ -335,6 +335,12 @@ export function isTransitFailure(e: unknown): boolean {
   return axios.isAxiosError(e) && !e.response;
 }
 
+/** True when the server rejected the client's credentials (401 or 403). */
+export function isAuthFailure(e: unknown): boolean {
+  const status = axios.isAxiosError(e) ? e.response?.status : undefined;
+  return status === 401 || status === 403;
+}
+
 export class Transport {
   private client: AxiosInstance;
 

@@ -103,7 +103,7 @@ export class FigChainClient {
                 strategy = s3Strategy;
                 break;
             case BootstrapStrategyEnum.HYBRID:
-                strategy = new HybridStrategy(s3Strategy, serverStrategy);
+                strategy = new HybridStrategy(s3Strategy, serverStrategy, this.transport);
                 break;
             case BootstrapStrategyEnum.SERVER:
                 strategy = serverStrategy;
